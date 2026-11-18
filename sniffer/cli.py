@@ -3,6 +3,7 @@
 用法示例：
     python -m sniffer ifaces              # 列出本机网卡
     python -m sniffer backend             # 打印 Scapy 实际启用的后端
+    sudo .venv/bin/python -m sniffer gui  # 启动最简 GUI（实时包列表）
     sudo .venv/bin/python -m sniffer capture -i en0 -c 5 -t 10 -f "tcp"
 """
 from __future__ import annotations
@@ -23,6 +24,15 @@ def _cmd_backend(_args: argparse.Namespace) -> int:
 
     print(format_backend(detect_backend()))
     return 0
+
+
+def _cmd_gui(_args: argparse.Namespace) -> int:
+    try:
+        from sniffer.gui.app import main as gui_main
+    except ImportError as exc:
+        print(f"[!] 无法导入 GUI（PySide6 是否已安装？）：{exc}", file=sys.stderr)
+        return 3
+    return gui_main([sys.argv[0]])
 
 
 def _cmd_capture(args: argparse.Namespace) -> int:
@@ -66,6 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("ifaces", help="列出本机可用网络接口").set_defaults(func=_cmd_ifaces)
     sub.add_parser("backend", help="打印 Scapy 实际启用的抓包后端").set_defaults(func=_cmd_backend)
+    sub.add_parser("gui", help="启动最简 GUI（实时包列表，可能需要 sudo）").set_defaults(func=_cmd_gui)
 
     cap = sub.add_parser("capture", help="最小抓包验证（可能需要 sudo）")
     cap.add_argument("-i", "--iface", default=None, help="网卡名，如 en0；默认交给 Scapy 选择")
