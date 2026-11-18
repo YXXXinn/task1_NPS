@@ -1,0 +1,12 @@
+# 《软件与系统安全》实验 1A 带 GUI 的网络嗅探器 —— Python 依赖
+# 依据：本机 arm64 + Homebrew Python 3.12.15 venv 中实测 / 解析得到的版本，不臆测。
+
+# 抓包与协议解析核心库。
+# 实测：2.8.0 在本机 venv 可正常 import，并完成网卡枚举与后端探测。
+scapy==2.8.0
+
+# GUI 框架，后续「GUI 阶段」使用。
+# 依据：pip dry-run 解析得到候选 6.12.0（cp310-abi3 / macosx_14_0 / universal2，
+#       兼容本机 arm64 + Python 3.12 + macOS 14+）。
+# 注意：第一阶段尚未实际安装与 import 验证，留待 GUI 阶段安装。
+PySide6==6.12.0

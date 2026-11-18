@@ -1,0 +1,40 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# ---- 虚拟环境（不提交，README 里有重建命令）----
+.venv/
+venv/
+env/
+
+# ---- 抓包产物 / 真实流量（可能含敏感信息，禁止提交）----
+*.pcap
+*.pcapng
+*.cap
+
+# ---- 密钥 / 凭证 / Token ----
+*.pem
+*.key
+*.p12
+*.keystore
+.env
+.env.*
+secrets.*
+*token*
+*.secret
+
+# ---- macOS / 编辑器 ----
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# ---- 测试与缓存 ----
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
