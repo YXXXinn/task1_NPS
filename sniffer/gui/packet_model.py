@@ -24,7 +24,7 @@ from scapy.layers.l2 import ARP, Ether
 class PacketRecord:
     """一个数据包在 Packet List 里需要展示的最小字段集合。"""
 
-    seq: int          # 序号（抓包顺序，从 1 开始）
+    seq: int          # 序号（抓包顺序，从 1 开始）——稳定标识，用于选中行映射到包
     ts: float         # 抓包时间戳（epoch 秒）
     time_str: str     # 格式化时间 HH:MM:SS.mmm
     src: str          # 源（IP / MAC / ARP 地址）
@@ -32,6 +32,8 @@ class PacketRecord:
     proto: str        # 协议标识（仅链路/网络/传输层）
     length: int       # 包长度（字节）
     summary: str      # scapy summary()，调试用
+    raw: bytes = b""  # 原始字节（bytes(pkt)）——供第三阶段详情树/hex 视图使用
+
 
 
 def _fmt_time(ts: float) -> str:
@@ -82,13 +84,21 @@ def _src_dst(pkt):
 
 
 def packet_to_record(pkt, seq: int) -> PacketRecord:
-    """把一个 scapy 包转换成 PacketRecord（纯函数，便于单测）。"""
+    """把一个 scapy 包转换成 PacketRecord（纯函数，便于单测）。
+
+    连同原始字节 raw=bytes(pkt) 一起保存，供详情树/hex 视图使用。raw 的内存随
+    PacketRecord 一起被有界结构（缓冲 maxlen / 表格行上限）约束，淘汰即释放。
+    """
     ts = float(getattr(pkt, "time", None) or time.time())
     src, dst = _src_dst(pkt)
     try:
         summary = pkt.summary()
     except Exception:
         summary = pkt.__class__.__name__
+    try:
+        raw = bytes(pkt)
+    except Exception:
+        raw = b""
     return PacketRecord(
         seq=seq,
         ts=ts,
@@ -98,6 +108,7 @@ def packet_to_record(pkt, seq: int) -> PacketRecord:
         proto=classify_protocol(pkt),
         length=len(pkt),
         summary=summary,
+        raw=raw,
     )
 
 

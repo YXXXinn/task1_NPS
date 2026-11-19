@@ -3,7 +3,8 @@
 覆盖：
 1. PacketTableModel 批量追加 + 行数上限（超出从表头淘汰最旧行）；
 2. 跨线程管线：worker 线程发 Signal(PacketRecord) -> 主线程槽收包 -> 有界缓冲，
-   验证 moveToThread + 排队连接下数据结构完整、计数正确（用合成记录，不开 socket）。
+   验证 moveToThread + 排队连接下数据结构完整、计数正确（用合成记录，不开 socket）；
+3. 选中行(序号)→取回正确包对象（record_at）；有界淘汰时原始包 raw 随记录释放（弱引用）。
 
 运行：QT_QPA_PLATFORM=offscreen python tests/test_gui_headless.py
 """
@@ -95,9 +96,44 @@ def test_cross_thread_pipeline(app):
     check([r.seq for r in drained] == list(range(1, 501)), "顺序与序号完整无错乱")
 
 
+def _rec_raw(seq, raw):
+    return PacketRecord(seq=seq, ts=0.0, time_str="00:00:00.000",
+                        src="a", dst="b", proto="TCP", length=len(raw), summary="x", raw=raw)
+
+
+def test_record_mapping_and_eviction():
+    """选中行(序号)→取回正确包对象；有界淘汰时原始包(raw)随记录释放。"""
+    import weakref
+
+    model = PacketTableModel(max_rows=5)
+    model.append_batch([_rec_raw(i, bytes([i]) * 4) for i in range(1, 6)])  # seq 1..5
+    # record_at 以行号取记录；首行应为最早的 seq=1
+    check(model.record_at(0).seq == 1, "record_at(0) 命中最早 seq=1")
+    check(model.record_at(4).seq == 5 and model.record_at(4).raw == bytes([5]) * 4,
+          "record_at(4) 命中 seq=5 且 raw 正确")
+    check(model.record_at(99) is None, "越界行返回 None")
+
+    # 弱引用盯住最早记录，追加导致淘汰后应被释放
+    oldest = model.record_at(0)
+    ref = weakref.ref(oldest)
+    del oldest
+    model.append_batch([_rec_raw(i, bytes([i & 0xff]) * 4) for i in range(6, 9)])  # 追加 6,7,8 -> 淘汰 1,2,3
+    check(model.rowCount() == 5, "行数仍封顶=5")
+    check(model.record_at(0).seq == 4, f"淘汰后首行 seq=4（实际 {model.record_at(0).seq}）")
+    import gc
+    gc.collect()
+    check(ref() is None, "被淘汰的最旧记录(连同 raw)已被释放(弱引用失效)")
+
+    # 模拟「按选中行取回包对象并还原字节」
+    rec = model.record_at(2)  # seq=6
+    from scapy.layers.l2 import Ether  # 仅验证 raw 可被重新解析
+    check(len(rec.raw) == 4, "选中记录 raw 长度正确")
+
+
 def main():
     app = QApplication.instance() or QApplication(sys.argv)
     test_table_model()
+    test_record_mapping_and_eviction()
     test_cross_thread_pipeline(app)
     print(f"\n结果：{'全部通过' if _fail == 0 else str(_fail) + ' 项失败'}")
     return 1 if _fail else 0

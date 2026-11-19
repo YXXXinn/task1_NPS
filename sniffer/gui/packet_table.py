@@ -81,3 +81,14 @@ class PacketTableModel(QAbstractTableModel):
         self.beginResetModel()
         self._rows.clear()
         self.endResetModel()
+
+    # --- 选中行 → 记录映射 ---
+    def record_at(self, row: int):
+        """按行号取 PacketRecord；越界返回 None。
+
+        选中处理应在「选中事件发生的当下」立即调用本方法取快照，而不是缓存行号：
+        表格会随抓包滚动/淘汰，行号不稳定；PacketRecord.seq 才是稳定标识。
+        """
+        if 0 <= row < len(self._rows):
+            return self._rows[row]
+        return None

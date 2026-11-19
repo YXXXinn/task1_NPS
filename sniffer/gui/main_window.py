@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QThread, QTimer, Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -16,13 +17,18 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
+    QSplitter,
     QTableView,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from sniffer.gui.capture_worker import CaptureWorker
+from sniffer.gui.dissect import dissect_layers, format_hex_dump
 from sniffer.gui.packet_model import BoundedPacketBuffer
 from sniffer.gui.packet_table import PacketTableModel
 
@@ -34,14 +40,15 @@ _TABLE_MAX_ROWS = 5000
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("网络嗅探器 — 实验 1A 第二阶段（实时包列表）")
-        self.resize(900, 560)
+        self.setWindowTitle("网络嗅探器 — 实验 1A 第三阶段（列表 + 详情 + 十六进制三栏）")
+        self.resize(1000, 700)
 
         self._thread = None
         self._worker = None
         self._buffer = BoundedPacketBuffer(maxlen=_BUFFER_MAXLEN)
         self._model = PacketTableModel(max_rows=_TABLE_MAX_ROWS)
         self._total = 0
+        self._shown_seq = None  # 当前详情/hex 已展示的包序号，避免重复渲染
 
         self._build_ui()
 
@@ -78,15 +85,54 @@ class MainWindow(QMainWindow):
         top.addWidget(self.status_dot)
         root.addLayout(top)
 
+        # 三栏（类 Wireshark）：上=Packet List；下=（左 详情树 / 右 十六进制）。
+        # 用 QSplitter 组合，渲染详情/hex 只在选中时触发，不影响列表实时刷新、不阻塞主线程。
+        main_split = QSplitter(Qt.Vertical)
+
         self.table = QTableView()
         self.table.setModel(self._model)
         self.table.setSelectionBehavior(QTableView.SelectRows)
+        self.table.setSelectionMode(QTableView.SingleSelection)
         self.table.horizontalHeader().setStretchLastSection(True)
-        root.addWidget(self.table, 1)
+        self.table.selectionModel().currentRowChanged.connect(self._on_row_changed)
+        main_split.addWidget(self.table)
+
+        bottom_split = QSplitter(Qt.Horizontal)
+
+        # 详情栏（协议分层树）
+        detail_box = QWidget()
+        detail_lay = QVBoxLayout(detail_box)
+        detail_lay.setContentsMargins(0, 0, 0, 0)
+        detail_lay.addWidget(QLabel("详情（协议分层）"))
+        self.detail_tree = QTreeWidget()
+        self.detail_tree.setHeaderLabels(["字段", "值"])
+        self.detail_tree.setColumnWidth(0, 220)
+        detail_lay.addWidget(self.detail_tree)
+        bottom_split.addWidget(detail_box)
+
+        # 十六进制 + ASCII 栏
+        hex_box = QWidget()
+        hex_lay = QVBoxLayout(hex_box)
+        hex_lay.setContentsMargins(0, 0, 0, 0)
+        hex_lay.addWidget(QLabel("十六进制 / ASCII（原始字节）"))
+        self.hex_view = QPlainTextEdit()
+        self.hex_view.setReadOnly(True)
+        self.hex_view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        mono = QFont("Menlo")
+        mono.setStyleHint(QFont.Monospace)
+        mono.setPointSize(11)
+        self.hex_view.setFont(mono)
+        hex_lay.addWidget(self.hex_view)
+        bottom_split.addWidget(hex_box)
+        bottom_split.setSizes([480, 520])
+
+        main_split.addWidget(bottom_split)
+        main_split.setSizes([400, 300])
+        root.addWidget(main_split, 1)
 
         self.statusBar().showMessage(
-            "提示：BPF 抓包过滤在内核层生效（本框）；显示过滤是对已抓到的包做界面筛选，"
-            "属第三阶段、层级不同。"
+            "提示：点击列表某行 → 下方查看该包的协议分层与十六进制。"
+            "BPF 抓包过滤在内核层（本框）；显示过滤属后续子阶段，层级不同。"
         )
 
     def _populate_ifaces(self) -> None:
@@ -170,12 +216,51 @@ class MainWindow(QMainWindow):
         batch = self._buffer.drain()
         if batch:
             self._model.append_batch(batch)
-            self.table.scrollToBottom()
+            # 用户正在查看某个包时（有选中）暂停自动滚动，避免抢焦点/把要看的行滚走。
+            if not self.table.selectionModel().hasSelection():
+                self.table.scrollToBottom()
         self.statusBar().showMessage(
             f"累计抓包 {self._total}  |  表格显示 {self._model.rowCount()} 行"
             f"（上限 {_TABLE_MAX_ROWS}）  |  缓冲丢弃 {self._buffer.dropped}"
-            f"  |  BPF 抓包过滤(内核层) ≠ 显示过滤(界面层，第三阶段)"
+            f"  |  BPF 抓包过滤(内核层) ≠ 显示过滤(后续子阶段)"
         )
+
+    # ---------------- 详情 / 十六进制 ----------------
+    def _on_row_changed(self, current, _previous) -> None:
+        """选中行变化：取该行记录的快照，渲染协议分层树与 hex/ASCII。
+
+        以 PacketRecord.seq（稳定标识）为准，不缓存行号（行会随抓包滚动/淘汰）。
+        """
+        if current is None or not current.isValid():
+            return
+        rec = self._model.record_at(current.row())
+        if rec is None or rec.seq == self._shown_seq:
+            return
+        self._shown_seq = rec.seq
+        self._render_detail(rec)
+
+    def _render_detail(self, rec) -> None:
+        from scapy.layers.l2 import Ether
+
+        # 十六进制 / ASCII
+        self.hex_view.setPlainText(format_hex_dump(rec.raw))
+
+        # 协议分层树：用原始字节按二层帧重新解析（抓包为 L2，故用 Ether）。
+        self.detail_tree.clear()
+        if not rec.raw:
+            return
+        try:
+            pkt = Ether(rec.raw)
+        except Exception as exc:
+            top = QTreeWidgetItem([f"#{rec.seq} 解析失败", str(exc)])
+            self.detail_tree.addTopLevelItem(top)
+            return
+        for layer in dissect_layers(pkt):
+            node = QTreeWidgetItem([layer.name, ""])
+            for fname, fval in layer.fields:
+                node.addChild(QTreeWidgetItem([str(fname), str(fval)]))
+            self.detail_tree.addTopLevelItem(node)
+        self.detail_tree.expandAll()
 
     # ---------------- 关闭 ----------------
     def closeEvent(self, event) -> None:

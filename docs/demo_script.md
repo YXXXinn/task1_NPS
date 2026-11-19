@@ -27,3 +27,22 @@
 - 自动化验证：`evidence/logs/stage2_headless_tests.log`
 - 截图：`evidence/screenshots/stage2_*.png`（**待手动采集**，见 index.md）
 - 设计示意图：`evidence/diagrams/threading_model.md`
+
+## 第三阶段子阶段 a 录屏步骤（详情栏 + 十六进制，待录制）
+
+1. `sudo .venv/bin/python -m sniffer gui` 启动，选 en0，点「开始」抓包。
+2. 展示三栏：上=Packet List，下左=详情（协议分层树），下右=十六进制/ASCII。
+3. 点选一个 TCP 包 → 详情栏逐层展开 Ethernet / IP / TCP（讲：字段来自 scapy 已解析的层）。
+   - 强调：端口显示为**数字**，**不**把端口臆断成 HTTP 等应用层（应用层识别留待后续子阶段）。
+4. 右下看该包十六进制 + ASCII（偏移/hex/ASCII 对齐，不可见字节 '.'），与 Wireshark 对照。
+5. 再点一个 UDP / ICMP / ARP 包，展示分层随包类型变化。
+6. 讲"选中映射用序号(seq)而非行号"：抓包滚动时点旧包仍能取回正确包对象。
+
+### 讲解要点（答辩）
+- 三栏用 QSplitter 组合；详情/hex 仅在选中时渲染，不影响列表实时刷新、不阻塞主线程。
+- 数据留存：有界缓存里连原始字节 raw=bytes(pkt) 一起存；raw 随记录被表格行上限淘汰而释放，内存有界。
+- 详情树只反映 scapy 的 dissection，不加应用层判定；端口用数字避免"端口→应用层"臆断。
+
+### 对应证据（第三阶段）
+- 自动化：`evidence/logs/stage3_headless_tests.log`
+- 截图：`evidence/screenshots/stage3_{three_pane,detail_tree,hexdump}.png`（**待手动采集**）

@@ -49,3 +49,39 @@
   - 操作/命令：`.venv/bin/python -m sniffer gui`（无 sudo）
   - 预期：弹窗提示权限不足与 sudo 用法，界面不崩溃
   - 实际结果：待采集
+
+## 第三阶段（子阶段 a：详情栏 + 十六进制/ASCII 视图）
+
+### 已采集（自动化、真实输出）
+
+- 文件：`logs/stage3_headless_tests.log`
+  - 采集日期：2026-11-19
+  - 场景：无头单元验证（合成包）——协议分层解析 dissect_layers（Ether/IP/TCP、IPv6/UDP、ICMP、ARP）、
+    端口显示为数字（不臆断应用层）、hex/ASCII 格式化、选中序号→取回包对象、有界淘汰释放 raw、
+    MainWindow 三栏构建 + 选中渲染详情树/hex（offscreen）
+  - 操作/命令：
+    - `python tests/test_dissect.py`
+    - `QT_QPA_PLATFORM=offscreen python tests/test_gui_headless.py`
+    - `QT_QPA_PLATFORM=offscreen python tests/test_packet_model.py`
+  - 预期：全部断言通过，退出码 0
+  - 实际结果：见日志（全部通过）
+  - 代码版本：第三阶段子阶段 a（未提交，待用户确认）
+  - 报告用途：证明分层解析/hex/映射/内存释放核心逻辑正确
+  - 脱敏：合成数据，无敏感信息
+
+### 待手动采集/验证（需 GUI 窗口 / root / 人工点击，助手无法代办）
+
+- 文件：`screenshots/stage3_three_pane.png` —— **待手动采集**
+  - 场景：三栏布局总览（上=Packet List，下左=详情树，下右=十六进制/ASCII）
+  - 操作/命令：`sudo .venv/bin/python -m sniffer gui`，抓到若干包后观察三栏
+  - 预期：三栏可见、可用 QSplitter 拖拽调整
+
+- 文件：`screenshots/stage3_detail_tree.png` —— **待手动采集**
+  - 场景：点击列表某包 → 详情栏按协议层展开（Ethernet/IP 或 IPv6/TCP 或 UDP/ICMP/ARP …）
+  - 操作/命令：点选一行 TCP 或 UDP 包，展开各层查看字段（地址/端口数字/标志位/长度）
+  - 预期：分层正确、端口显示为**数字**、无 HTTP 等应用层标签
+
+- 文件：`screenshots/stage3_hexdump.png` —— **待手动采集**
+  - 场景：同一选中包的十六进制 + ASCII 视图（偏移/hex/ASCII 三段，等宽对齐，不可见字节为 '.'）
+  - 操作/命令：选中包后看右下 hex 栏
+  - 预期：字节与 Wireshark 对照一致

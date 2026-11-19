@@ -1,14 +1,15 @@
 # 网络嗅探器（《软件与系统安全》实验 1A）
 
 一个带 GUI 的网络嗅探器。技术栈：**macOS + Python + Scapy + PySide6**。
-本仓库按阶段推进，当前处于 **第二阶段：最简 PySide6 GUI（实时显示数据包列表）**。
+本仓库按阶段推进，当前处于 **第三阶段：三栏界面（列表 + 协议详情 + 十六进制/ASCII）**。
 
 ## 阶段计划
 
 - 第一阶段（已完成）：环境搭建、项目骨架、命令行工具——网卡枚举、最小抓包、Scapy 后端探测、权限处理。
-- **第二阶段（当前）**：抓包线程化（QObject worker + moveToThread）+ 跨线程 Qt 信号传包 + 有界缓存 + QTimer 批量刷新，最简 GUI 实时显示包列表。暂不做协议深度解析/详情栏/十六进制栏。
-- 第三阶段：包详情栏、十六进制视图、GUI 显示过滤（与 BPF 抓包过滤分层）。
-- 第四阶段：协议解析与分层展示（端口仅作「推测」提示，判定结合载荷特征）。
+- 第二阶段（已完成）：抓包线程化（QObject worker + moveToThread）+ 跨线程 Qt 信号传包 + 有界缓存 + QTimer 批量刷新，最简 GUI 实时显示包列表。
+- **第三阶段（当前，子阶段 a）**：类 Wireshark 三栏——Packet List + 协议分层详情树 + 十六进制/ASCII 视图。本子阶段**不做** GUI 显示过滤、**不做**应用层协议识别（留待后续子阶段）。
+- 第三阶段后续：GUI 显示过滤（与 BPF 抓包过滤分层）。
+- 第四阶段：应用层协议解析与判定（端口仅作「推测」提示，结合载荷特征并标注「推测」）。
 
 ## 环境要求（本机实测）
 
@@ -101,11 +102,12 @@ macOS 抓包需要访问 `/dev/bpf*` 设备，通常需要 **root 权限**：
 │   ├── interfaces.py   #   网卡枚举
 │   ├── capture.py      #   命令行最小抓包 + 权限错误处理
 │   ├── cli.py          #   argparse 子命令：ifaces / backend / capture / gui
-│   └── gui/            #   第二阶段 GUI
-│       ├── packet_model.py    # 纯逻辑(无Qt)：包→记录、有界缓存
+│   └── gui/            #   GUI
+│       ├── packet_model.py    # 纯逻辑(无Qt)：包→记录、有界缓存、原始字节留存
+│       ├── dissect.py         # 纯逻辑(无Qt)：协议分层解析 + 十六进制/ASCII 格式化
 │       ├── capture_worker.py  # QObject worker + moveToThread 抓包线程
-│       ├── packet_table.py    # QAbstractTableModel（行上限）
-│       ├── main_window.py     # 主窗口：缓存+QTimer批量刷新+线程生命周期
+│       ├── packet_table.py    # QAbstractTableModel（行上限 + 序号→记录映射）
+│       ├── main_window.py     # 三栏窗口：列表+详情树+hex；缓存+QTimer批量刷新+线程生命周期
 │       └── app.py             # QApplication 启动入口
 ├── scripts/check_env.py       # 环境自检脚本
 ├── tests/                     # 无头自动化验证（合成包）
