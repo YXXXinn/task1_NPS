@@ -12,6 +12,7 @@ from PySide6.QtCore import QThread, QTimer, Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -32,6 +33,13 @@ from sniffer.gui.display_filter import FilterError, compile_filter
 from sniffer.gui.dissect import dissect_layers, format_hex_dump
 from sniffer.gui.packet_model import BoundedPacketBuffer
 from sniffer.gui.packet_table import PacketTableModel
+from sniffer.gui.tcpflow import (
+    FlowIndex,
+    flow_key,
+    format_flow_summary,
+    format_stream,
+    reassemble,
+)
 
 _FLUSH_INTERVAL_MS = 200
 _BUFFER_MAXLEN = 20000
@@ -41,13 +49,15 @@ _TABLE_MAX_ROWS = 5000
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("网络嗅探器 — 实验 1A 第三阶段（三栏 + 显示过滤 + 应用层推测）")
+        self.setWindowTitle("网络嗅探器 — 实验 1A（三栏 + 过滤 + 应用层推测 + TCP 流追踪）")
         self.resize(1040, 720)
 
         self._thread = None
         self._worker = None
         self._buffer = BoundedPacketBuffer(maxlen=_BUFFER_MAXLEN)
         self._model = PacketTableModel(max_rows=_TABLE_MAX_ROWS)
+        self._flow_index = FlowIndex()       # 有界 TCP 流索引（会话键→流ID→seq 列表）
+        self._tracked_flow_id = None          # 当前正在追踪的流ID（None=未追踪）
         self._total = 0
         self._shown_seq = None  # 当前详情/hex 已展示的包序号，避免重复渲染
 
@@ -101,6 +111,24 @@ class MainWindow(QMainWindow):
         self.filter_hint = QLabel("")  # 显示过滤语法错误提示
         row2.addWidget(self.filter_hint, 2)
         root.addLayout(row2)
+
+        # 第三行：TCP 流追踪（基于 IP+Port、方向无关；不按进程归流）。
+        row3 = QHBoxLayout()
+        self.follow_btn = QPushButton("追踪此 TCP 流")
+        self.follow_btn.setEnabled(False)  # 选中 TCP 包时才可用
+        self.follow_btn.clicked.connect(self._follow_flow)
+        row3.addWidget(self.follow_btn)
+        self.clear_flow_btn = QPushButton("清除流追踪")
+        self.clear_flow_btn.setEnabled(False)
+        self.clear_flow_btn.clicked.connect(self._clear_flow)
+        row3.addWidget(self.clear_flow_btn)
+        self.stream_btn = QPushButton("查看流内容(重组)")
+        self.stream_btn.setEnabled(False)
+        self.stream_btn.clicked.connect(self._show_stream)
+        row3.addWidget(self.stream_btn)
+        self.flow_label = QLabel("未追踪任何 TCP 流")
+        row3.addWidget(self.flow_label, 1)
+        root.addLayout(row3)
 
         # 三栏（类 Wireshark）：上=Packet List；下=（左 详情树 / 右 十六进制）。
         # 用 QSplitter 组合，渲染详情/hex 只在选中时触发，不影响列表实时刷新、不阻塞主线程。
@@ -224,9 +252,10 @@ class MainWindow(QMainWindow):
 
     # ---------------- 数据流 ----------------
     def _on_packet(self, record) -> None:
-        """主线程槽：只入缓冲，不碰表格。"""
+        """主线程槽：只入缓冲 + 并入流索引，不碰表格。"""
         self._total += 1
         self._buffer.append(record)
+        self._flow_index.add(record)  # 有界流索引；非 TCP 自动忽略
 
     def _flush(self) -> None:
         """QTimer 定时：批量把缓冲里的包塞进表格模型（新包按当前显示过滤决定是否可见）。"""
@@ -240,8 +269,11 @@ class MainWindow(QMainWindow):
             f"累计抓包 {self._total}  |  全量保留 {self._model.total_count()}"
             f"（上限 {_TABLE_MAX_ROWS}）  |  显示过滤后可见 {self._model.visible_count()} 行"
             f"  |  缓冲丢弃 {self._buffer.dropped}"
+            f"  |  流数 {self._flow_index.flow_count()}"
             f"  |  BPF(内核层,丢包不可逆) ≠ 显示过滤(界面层,可逆)"
         )
+        if self._tracked_flow_id is not None:
+            self._refresh_flow_label()
 
     def _apply_display_filter(self) -> None:
         """显示过滤输入变化：编译表达式并重建视图。不丢底层全量数据。"""
@@ -263,9 +295,15 @@ class MainWindow(QMainWindow):
         以 PacketRecord.seq（稳定标识）为准，不缓存行号（行会随抓包滚动/淘汰）。
         """
         if current is None or not current.isValid():
+            self.follow_btn.setEnabled(False)
             return
         rec = self._model.record_at(current.row())
-        if rec is None or rec.seq == self._shown_seq:
+        if rec is None:
+            self.follow_btn.setEnabled(False)
+            return
+        # 仅 TCP 包可「追踪此 TCP 流」
+        self.follow_btn.setEnabled(flow_key(rec) is not None)
+        if rec.seq == self._shown_seq:
             return
         self._shown_seq = rec.seq
         self._render_detail(rec)
@@ -312,6 +350,53 @@ class MainWindow(QMainWindow):
 
         self.detail_tree.expandAll()
 
+    # ---------------- TCP 流追踪 ----------------
+    def _follow_flow(self) -> None:
+        """对当前选中的 TCP 包，过滤到只显示其所属会话（方向无关）的包。"""
+        idx = self.table.currentIndex()
+        rec = self._model.record_at(idx.row()) if idx.isValid() else None
+        if rec is None:
+            return
+        key = flow_key(rec)
+        if key is None:
+            return
+        self._tracked_flow_id = self._flow_index.id_of(rec)
+        # 与显示过滤叠加的「当前流」视图层过滤：同一会话键（两个方向都在内）。
+        self._model.set_flow_filter(lambda r, k=key: flow_key(r) == k)
+        self.clear_flow_btn.setEnabled(True)
+        self.stream_btn.setEnabled(True)
+        self._refresh_flow_label()
+
+    def _clear_flow(self) -> None:
+        """清除流追踪，恢复（显示过滤仍生效）。"""
+        self._tracked_flow_id = None
+        self._model.set_flow_filter(None)
+        self.clear_flow_btn.setEnabled(False)
+        self.stream_btn.setEnabled(False)
+        self.flow_label.setText("未追踪任何 TCP 流")
+
+    def _refresh_flow_label(self) -> None:
+        if self._tracked_flow_id is None:
+            return
+        flow = self._flow_index.get(self._tracked_flow_id)
+        if flow is None:
+            self.flow_label.setText("追踪中（流信息已过期）")
+            return
+        self.flow_label.setText("追踪流 #%d：%s" % (flow.id, format_flow_summary(flow)))
+
+    def _show_stream(self) -> None:
+        """打开「跟踪流」窗口：按方向+抓包顺序重组该会话的 TCP 载荷。"""
+        if self._tracked_flow_id is None:
+            return
+        flow = self._flow_index.get(self._tracked_flow_id)
+        if flow is None:
+            QMessageBox.information(self, "跟踪流", "该流信息已过期（可能已被淘汰）。")
+            return
+        seqs = self._flow_index.seqs_of(self._tracked_flow_id)
+        records = self._model.records_by_seqs(seqs)
+        dlg = _FlowStreamDialog(records, flow.endpoints, self)
+        dlg.exec()
+
     # ---------------- 关闭 ----------------
     def closeEvent(self, event) -> None:
         """关窗：确保抓包线程安全结束，不残留。"""
@@ -322,3 +407,39 @@ class MainWindow(QMainWindow):
             self._thread.wait(2000)
         self._timer.stop()
         super().closeEvent(event)
+
+
+class _FlowStreamDialog(QDialog):
+    """跟踪流窗口：按方向+抓包顺序重组该会话的 TCP 载荷，可切换 文本/Hex。"""
+
+    def __init__(self, records, endpoints, parent=None) -> None:
+        super().__init__(parent)
+        self._records = records
+        self._endpoints = endpoints
+        self._as_hex = False
+        self.setWindowTitle("跟踪 TCP 流（内容重组）")
+        self.resize(760, 560)
+
+        lay = QVBoxLayout(self)
+        self.toggle_btn = QPushButton("切换 文本/Hex 视图")
+        self.toggle_btn.clicked.connect(self._toggle)
+        lay.addWidget(self.toggle_btn)
+
+        self.view = QPlainTextEdit()
+        self.view.setReadOnly(True)
+        self.view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        mono = QFont("Menlo")
+        mono.setStyleHint(QFont.Monospace)
+        mono.setPointSize(11)
+        self.view.setFont(mono)
+        lay.addWidget(self.view, 1)
+
+        self._render()
+
+    def _toggle(self) -> None:
+        self._as_hex = not self._as_hex
+        self._render()
+
+    def _render(self) -> None:
+        segments = reassemble(self._records, self._endpoints)
+        self.view.setPlainText(format_stream(segments, self._endpoints, as_hex=self._as_hex))

@@ -69,3 +69,22 @@
 ### 对应证据（第三阶段 b+c）
 - 自动化：`evidence/logs/stage3b_filter_appid_tests.log`
 - 截图：`evidence/screenshots/stage3b_display_filter.png`、`stage3b_filter_vs_bpf.png`、`stage3c_appid_http_tls.png`、`stage3c_appid_counterexample.png`（**待手动采集**）
+
+## 可选扩展：TCP 流追踪（Follow TCP Stream，待录制）
+
+1. 抓包并产生一次 HTTP 请求（`curl http://example.com`）。
+2. 在列表里选中该会话的任意一个 TCP 包 → 点「追踪此 TCP 流」：
+   - 列表立即只剩这条会话的包（请求/响应两个方向都在）；第三行显示流概要 `ipA:portA ↔ ipB:portB | 包数 | 双向字节`。
+   - 讲：会话键=两端 {IP, Port}、**方向无关**；**不按进程归流**。
+3. 点「查看流内容(重组)」→ 弹窗：A→B（请求）与 B→A（响应）按方向+抓包顺序拼接，可切换 文本/Hex。
+   - 诚实说明：这是从简重组（按抓包顺序），**未做**完整 TCP 重排（重传/乱序/缺包不处理）。
+4. 点「清除流追踪」→ 列表恢复（若此前有显示过滤，显示过滤仍生效，证明两者叠加、互不破坏）。
+
+### 讲解要点（答辩）
+- 会话键规范化：对两端 (ip, port) 排序，A→B 与 B→A 得到同一键 → 同一条流。
+- 内存有界：流数量上限（LRU 淘汰最久未活跃流）、每流只存最近 N 个包序号(seq，int)，不持有大对象，与 `_all` 有界缓存协调。
+- 「当前流」过滤在视图层与显示过滤**叠加**，一键清除恢复；选中仍用 seq 稳定映射。
+
+### 对应证据（可选扩展）
+- 自动化：`evidence/logs/stage4_tcpflow_tests.log`
+- 截图：`evidence/screenshots/stage4_follow_stream_list.png`、`stage4_follow_stream_reassembly.png`（**待手动采集**）

@@ -26,7 +26,14 @@ class PacketTableModel(QAbstractTableModel):
         self._all: deque = deque()                 # 全部记录（有界）
         self._view: List[PacketRecord] = []        # 过滤后可见记录
         self._max_rows = max_rows
-        self._predicate: Callable = lambda r: True  # 当前显示过滤（默认全部显示）
+        self._predicate: Callable = lambda r: True  # 显示过滤（界面层，默认全显示）
+        self._flow_pred = None                      # TCP 流追踪过滤（None=未追踪）
+
+    def _passes(self, r) -> bool:
+        """一个记录是否可见 = 显示过滤 且 (流追踪过滤 或 未在追踪)。"""
+        if not self._predicate(r):
+            return False
+        return True if self._flow_pred is None else self._flow_pred(r)
 
     # --- Qt 必要接口（对外行 = 过滤后视图）---
     def rowCount(self, parent=QModelIndex()) -> int:
@@ -90,7 +97,7 @@ class PacketTableModel(QAbstractTableModel):
         self._all.extend(records)
 
         # 2) 新记录里通过过滤的，追加到视图尾部
-        passing = [r for r in records if self._predicate(r)]
+        passing = [r for r in records if self._passes(r)]
         if passing:
             start = len(self._view)
             self.beginInsertRows(QModelIndex(), start, start + len(passing) - 1)
@@ -101,8 +108,23 @@ class PacketTableModel(QAbstractTableModel):
         """切换显示过滤：保留 _all 全量，仅按新谓词重建可见视图。"""
         self.beginResetModel()
         self._predicate = predicate
-        self._view = [r for r in self._all if predicate(r)]
+        self._view = [r for r in self._all if self._passes(r)]
         self.endResetModel()
+
+    def set_flow_filter(self, predicate) -> None:
+        """设置/清除 TCP 流追踪过滤（None=清除）；与显示过滤叠加，保留全量。"""
+        self.beginResetModel()
+        self._flow_pred = predicate
+        self._view = [r for r in self._all if self._passes(r)]
+        self.endResetModel()
+
+    def is_following_flow(self) -> bool:
+        return self._flow_pred is not None
+
+    def records_by_seqs(self, seqs) -> List[PacketRecord]:
+        """按给定 seq 列表取回仍在 _all 中的记录，保持 seqs 的顺序（已淘汰的跳过）。"""
+        by_seq = {r.seq: r for r in self._all}
+        return [by_seq[s] for s in seqs if s in by_seq]
 
     def clear(self) -> None:
         self.beginResetModel()

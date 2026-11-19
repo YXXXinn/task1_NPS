@@ -1,15 +1,15 @@
 # 网络嗅探器（《软件与系统安全》实验 1A）
 
 一个带 GUI 的网络嗅探器。技术栈：**macOS + Python + Scapy + PySide6**。
-本仓库按阶段推进，当前处于 **第三阶段：三栏界面 + 显示过滤 + 应用层审慎推测**。
+本仓库按阶段推进，当前处于 **第三阶段完成 + 可选扩展（TCP 流追踪）**。
 
 ## 阶段计划
 
 - 第一阶段（已完成）：环境搭建、项目骨架、命令行工具——网卡枚举、最小抓包、Scapy 后端探测、权限处理。
 - 第二阶段（已完成）：抓包线程化（QObject worker + moveToThread）+ 跨线程 Qt 信号传包 + 有界缓存 + QTimer 批量刷新，最简 GUI 实时显示包列表。
 - 第三阶段(a)（已完成）：类 Wireshark 三栏——Packet List + 协议分层详情树 + 十六进制/ASCII 视图。
-- **第三阶段(b)(c)（当前）**：GUI 显示过滤（界面层，区别于 BPF 内核层）+ 应用层审慎推测（HTTP/TLS/DNS，端口≠证据、结论标「推测」）。
-- 第四阶段：流追踪等扩展（基于 IP+Port 的 TCP 流，加分项）。
+- 第三阶段(b)(c)（已完成）：GUI 显示过滤（界面层，区别于 BPF 内核层）+ 应用层审慎推测（HTTP/TLS/DNS，端口≠证据、结论标「推测」）。
+- **可选扩展（已完成）**：基于 IP+Port 的 TCP 流追踪（Follow TCP Stream，方向无关；不按进程归流）+ 从简的流内容重组。
 
 ## 环境要求（本机实测）
 
@@ -67,6 +67,7 @@ python tests/test_packet_model.py                               # 纯逻辑：�
 python tests/test_dissect.py                                    # 纯逻辑：协议分层解析 + hex
 python tests/test_appid.py                                      # 纯逻辑：应用层推测 + 反例
 python tests/test_display_filter.py                             # 纯逻辑：显示过滤语法/筛选
+python tests/test_tcpflow.py                                    # 纯逻辑：TCP 流键/索引/有界/重组
 QT_QPA_PLATFORM=offscreen python tests/test_gui_headless.py     # 表格模型 + 跨线程信号管线
 ```
 
@@ -108,6 +109,15 @@ macOS 抓包需要访问 `/dev/bpf*` 设备，通常需要 **root 权限**：
 - **端口只作提示并显式标注**：端口与载荷一致会注明；不一致（如 80 上是 TLS、443 上非 TLS）**以载荷为准**并标注冲突；载荷无特征时即使端口常见也只显示「仅端口提示、未证实」，不下结论。
 - 所有结论在 UI 上均带「**推测**」字样；列表协议列对已识别的追加 `(疑似X?)` 带问号，详情栏末尾有「应用层(推测)」节点列出依据/端口提示/置信度。识别不出显示「未识别」。
 
+### TCP 流追踪（Follow TCP Stream，可选扩展）
+
+- 逻辑在 `sniffer/gui/tcpflow.py`（无 Qt 纯函数 + 轻量有界状态类）。**只按 {IP, Port} 归流，不按进程归流**。
+- **会话键定义**：取 TCP 两端 `(ip, port)` 排序得到规范化键，**方向无关**——`A→B` 与 `B→A` 归为同一条流；非 TCP / 缺端口无流键。
+- **用法**：选中一个 TCP 包 → 点「追踪此 TCP 流」→ 列表只显示该会话（两个方向）的包；第三行显示流概要 `ipA:portA ↔ ipB:portB | 包数(双向) | 双向字节`。点「查看流内容(重组)」弹窗按方向(A→B / B→A)拼接 TCP 载荷，可切换 文本/Hex。点「清除流追踪」恢复。
+- **与显示过滤的关系**：流追踪是**视图层的一个附加过滤**，与显示过滤**叠加**（可见 = 显示过滤 ∩ 当前流）；两者独立、都可一键清除，底层 `_all` 全量不丢。
+- **内存有界**：流数量有上限（超限按 LRU 淘汰最久未活跃的流）、每条流只保留最近 N 个包序号(`seq`，int)，不持有大对象；与 `_all` 有界缓存协调，不会无界增长。
+- **重组的局限（务必知悉）**：当前为**从简重组**——按**抓包顺序**+方向拼接载荷，跳过无载荷包（握手/纯 ACK）。**未实现**完整 TCP 重组：不处理重传、乱序、按 TCP seq 重排、缺包补零。仅用于直观查看会话内容，不等价于 Wireshark 的 Follow Stream。
+
 ## 目录结构
 
 ```
@@ -124,9 +134,10 @@ macOS 抓包需要访问 `/dev/bpf*` 设备，通常需要 **root 权限**：
 │       ├── dissect.py         # 纯逻辑(无Qt)：协议分层解析 + 十六进制/ASCII 格式化
 │       ├── display_filter.py  # 纯逻辑(无Qt)：显示过滤(界面层) 语法解析与判定
 │       ├── appid.py           # 纯逻辑(无Qt)：应用层审慎推测(HTTP/TLS/DNS，端口≠证据)
+│       ├── tcpflow.py         # 纯逻辑(无Qt)：TCP 流键/有界流索引/流内容重组
 │       ├── capture_worker.py  # QObject worker + moveToThread 抓包线程
-│       ├── packet_table.py    # QAbstractTableModel：全量有界 + 显示过滤视图 + 序号映射
-│       ├── main_window.py     # 三栏窗口：列表+详情(含应用层推测节点)+hex；显示过滤；线程生命周期
+│       ├── packet_table.py    # QAbstractTableModel：全量有界 + 显示过滤/流过滤视图 + 序号映射
+│       ├── main_window.py     # 三栏窗口 + 显示过滤 + 应用层推测节点 + TCP 流追踪/重组窗口
 │       └── app.py             # QApplication 启动入口
 ├── scripts/check_env.py       # 环境自检脚本
 ├── tests/                     # 无头自动化验证（合成包）

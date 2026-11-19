@@ -127,3 +127,34 @@
   - 场景：**反例**——非常规端口或端口与载荷不一致时不被误判（如 443 上非 TLS 显示「仅端口提示、未证实」）
   - 操作/命令：构造/捕获此类流量，点包看应用层节点的「推测/未证实」标注
   - 预期：不出现把端口当证据的确证式结论
+
+## 可选扩展（基于 IP+Port 的 TCP 流追踪 Follow TCP Stream；不做按进程归流）
+
+### 已采集（自动化、真实输出）
+
+- 文件：`logs/stage4_tcpflow_tests.log`
+  - 采集日期：2026-11-19
+  - 场景：无头单元验证（合成包）——
+    flow_key 方向无关归并、不同会话区分、非 TCP 无键；FlowIndex 双向计数/seq 收集；
+    有界（max_flows LRU 淘汰、每流 seq 上限丢最旧）；reassemble 双向载荷按方向+顺序重组、纯 ACK 跳过；
+    MainWindow「追踪此 TCP 流」→ 列表只剩该会话、流概要正确、与显示过滤叠加、清除恢复、重组窗口内容正确
+  - 操作/命令：
+    - `python tests/test_tcpflow.py`
+    - `QT_QPA_PLATFORM=offscreen python tests/test_gui_headless.py`（回归）
+  - 预期：全部断言通过，退出码 0
+  - 实际结果：见日志（全部通过）
+  - 代码版本：可选扩展 TCP 流追踪（未提交，待用户确认）
+  - 报告用途：证明会话归并/有界/重组逻辑正确
+  - 脱敏：合成数据，无敏感信息
+
+### 待手动采集/验证（需 GUI 窗口 / root / 人工操作）
+
+- 文件：`screenshots/stage4_follow_stream_list.png` —— **待手动采集**
+  - 场景：选中一个 TCP 包 → 点「追踪此 TCP 流」→ 列表只剩该会话（两个方向）；第三行显示流概要 `ipA:portA ↔ ipB:portB | 包数 | 字节`
+  - 操作/命令：`sudo .venv/bin/python -m sniffer gui` 抓包后操作
+  - 预期：列表只剩该会话、概要正确；点「清除流追踪」恢复
+
+- 文件：`screenshots/stage4_follow_stream_reassembly.png` —— **待手动采集**
+  - 场景：点「查看流内容(重组)」→ 弹窗按方向(A→B / B→A)拼接载荷，可切换 文本/Hex
+  - 操作/命令：追踪某 HTTP 流后点查看流内容
+  - 预期：请求在 A→B、响应在 B→A，方向前缀清晰；标注「按抓包顺序拼接、未做完整 TCP 重排」
