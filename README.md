@@ -1,15 +1,15 @@
 # 网络嗅探器（《软件与系统安全》实验 1A）
 
 一个带 GUI 的网络嗅探器。技术栈：**macOS + Python + Scapy + PySide6**。
-本仓库按阶段推进，当前处于 **第三阶段：三栏界面（列表 + 协议详情 + 十六进制/ASCII）**。
+本仓库按阶段推进，当前处于 **第三阶段：三栏界面 + 显示过滤 + 应用层审慎推测**。
 
 ## 阶段计划
 
 - 第一阶段（已完成）：环境搭建、项目骨架、命令行工具——网卡枚举、最小抓包、Scapy 后端探测、权限处理。
 - 第二阶段（已完成）：抓包线程化（QObject worker + moveToThread）+ 跨线程 Qt 信号传包 + 有界缓存 + QTimer 批量刷新，最简 GUI 实时显示包列表。
-- **第三阶段（当前，子阶段 a）**：类 Wireshark 三栏——Packet List + 协议分层详情树 + 十六进制/ASCII 视图。本子阶段**不做** GUI 显示过滤、**不做**应用层协议识别（留待后续子阶段）。
-- 第三阶段后续：GUI 显示过滤（与 BPF 抓包过滤分层）。
-- 第四阶段：应用层协议解析与判定（端口仅作「推测」提示，结合载荷特征并标注「推测」）。
+- 第三阶段(a)（已完成）：类 Wireshark 三栏——Packet List + 协议分层详情树 + 十六进制/ASCII 视图。
+- **第三阶段(b)(c)（当前）**：GUI 显示过滤（界面层，区别于 BPF 内核层）+ 应用层审慎推测（HTTP/TLS/DNS，端口≠证据、结论标「推测」）。
+- 第四阶段：流追踪等扩展（基于 IP+Port 的 TCP 流，加分项）。
 
 ## 环境要求（本机实测）
 
@@ -64,6 +64,9 @@ sudo .venv/bin/python -m sniffer capture -i en0 -c 5 -t 10 -f "tcp"
 
 ```bash
 python tests/test_packet_model.py                               # 纯逻辑：判定/字段/有界缓存
+python tests/test_dissect.py                                    # 纯逻辑：协议分层解析 + hex
+python tests/test_appid.py                                      # 纯逻辑：应用层推测 + 反例
+python tests/test_display_filter.py                             # 纯逻辑：显示过滤语法/筛选
 QT_QPA_PLATFORM=offscreen python tests/test_gui_headless.py     # 表格模型 + 跨线程信号管线
 ```
 
@@ -85,11 +88,25 @@ macOS 抓包需要访问 `/dev/bpf*` 设备，通常需要 **root 权限**：
   provider 不可用，Scapy 会自动回退到 macOS 原生 BPF。实际结果以
   `python -m sniffer backend` 的运行时检测为准，不臆测。
 - **BPF 抓包过滤 vs GUI 显示过滤**：
-  - BPF 抓包过滤在**内核层**生效，通过 `capture(..., bpf_filter=...)` 或 GUI 顶部的
-    「BPF 抓包过滤」框传给 Scapy 的 `filter=`，语法同 tcpdump（如 `tcp port 80`），
-    不匹配的包在内核即被丢弃。
-  - GUI 显示过滤（第三阶段）在**用户态**对「已抓到的包」做界面筛选，可反复开关。
-  - 两者层级与时机不同，代码与讲解中分别对待。
+  - BPF 抓包过滤在**内核层**生效，通过 `capture(..., bpf_filter=...)` 或 GUI 顶部「BPF 抓包过滤(内核层)」框传给 Scapy 的 `filter=`，语法同 tcpdump（如 `tcp port 80`）。**不匹配的包在内核即被丢弃、不可逆**。
+  - GUI **显示过滤（界面层）**作用于**已抓到的包**：不丢数据、可随时改/清空、立即重筛（清空即恢复全部）。底层有界缓存始终保留全量。
+  - 两者层级、时机、可逆性都不同，代码（`sniffer/gui/display_filter.py` 独立于抓包）与讲解中分别对待。
+
+### 显示过滤语法（本实现真正支持的子集，不是 Wireshark 全套）
+
+- 协议关键字：`tcp` | `udp` | `icmp` | `arp` | `ip` | `ipv6`
+- 地址：`ip==<addr>` | `ip!=<addr>` | `src==<addr>` | `dst==<addr>`（`ip` 匹配源或目的）
+- 端口：`port <n>` | `port==<n>` | `port!=<n>` | `sport==<n>` | `dport==<n>`（`port` 匹配源或目的）
+- 组合：`and` / `or` 连接，优先级 **and 高于 or**（无括号）；大小写不敏感；空表达式=显示全部。
+- 示例：`tcp`、`tcp and port 443`、`ip==172.22.124.230`、`udp and port 53`、`icmp or arp`
+- 语法非法时界面给出「语法错误」提示并保持当前视图不变（不乱筛）。
+
+### 应用层识别：审慎「推测」（端口≠证据）
+
+- 逻辑在 `sniffer/gui/appid.py`（无 Qt 纯函数），本阶段识别 **HTTP / TLS/HTTPS 握手 / DNS**。
+- **判定依据载荷特征**，不是端口：HTTP 看请求行/响应行（`... HTTP/1.` / `HTTP/1. ...`）、TLS 看 record 头（`0x16/0x14-0x17` + `0x03 0xXX`）、DNS 看 scapy 解析出的 DNS 结构。
+- **端口只作提示并显式标注**：端口与载荷一致会注明；不一致（如 80 上是 TLS、443 上非 TLS）**以载荷为准**并标注冲突；载荷无特征时即使端口常见也只显示「仅端口提示、未证实」，不下结论。
+- 所有结论在 UI 上均带「**推测**」字样；列表协议列对已识别的追加 `(疑似X?)` 带问号，详情栏末尾有「应用层(推测)」节点列出依据/端口提示/置信度。识别不出显示「未识别」。
 
 ## 目录结构
 
@@ -103,11 +120,13 @@ macOS 抓包需要访问 `/dev/bpf*` 设备，通常需要 **root 权限**：
 │   ├── capture.py      #   命令行最小抓包 + 权限错误处理
 │   ├── cli.py          #   argparse 子命令：ifaces / backend / capture / gui
 │   └── gui/            #   GUI
-│       ├── packet_model.py    # 纯逻辑(无Qt)：包→记录、有界缓存、原始字节留存
+│       ├── packet_model.py    # 纯逻辑(无Qt)：包→记录(含raw/端口/l3/应用层推测)、有界缓存
 │       ├── dissect.py         # 纯逻辑(无Qt)：协议分层解析 + 十六进制/ASCII 格式化
+│       ├── display_filter.py  # 纯逻辑(无Qt)：显示过滤(界面层) 语法解析与判定
+│       ├── appid.py           # 纯逻辑(无Qt)：应用层审慎推测(HTTP/TLS/DNS，端口≠证据)
 │       ├── capture_worker.py  # QObject worker + moveToThread 抓包线程
-│       ├── packet_table.py    # QAbstractTableModel（行上限 + 序号→记录映射）
-│       ├── main_window.py     # 三栏窗口：列表+详情树+hex；缓存+QTimer批量刷新+线程生命周期
+│       ├── packet_table.py    # QAbstractTableModel：全量有界 + 显示过滤视图 + 序号映射
+│       ├── main_window.py     # 三栏窗口：列表+详情(含应用层推测节点)+hex；显示过滤；线程生命周期
 │       └── app.py             # QApplication 启动入口
 ├── scripts/check_env.py       # 环境自检脚本
 ├── tests/                     # 无头自动化验证（合成包）

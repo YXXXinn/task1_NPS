@@ -32,7 +32,11 @@ class PacketRecord:
     proto: str        # 协议标识（仅链路/网络/传输层）
     length: int       # 包长度（字节）
     summary: str      # scapy summary()，调试用
-    raw: bytes = b""  # 原始字节（bytes(pkt)）——供第三阶段详情树/hex 视图使用
+    raw: bytes = b""  # 原始字节（bytes(pkt)）——供详情树/hex 视图使用
+    sport: Optional[int] = None  # 源端口（TCP/UDP），供显示过滤
+    dport: Optional[int] = None  # 目的端口（TCP/UDP），供显示过滤
+    l3: str = ""      # 网络层族：IPv4 / IPv6 / ARP / ""，供显示过滤区分 ip/ipv6
+    app: object = None  # 应用层推测 AppGuess（审慎、带依据）；None=未计算
 
 
 
@@ -83,12 +87,35 @@ def _src_dst(pkt):
     return "-", "-"
 
 
+def _l3_family(pkt) -> str:
+    if pkt.haslayer(ARP):
+        return "ARP"
+    if pkt.haslayer(IP):
+        return "IPv4"
+    if pkt.haslayer(IPv6):
+        return "IPv6"
+    return ""
+
+
+def _ports(pkt):
+    if pkt.haslayer(TCP):
+        return int(pkt[TCP].sport), int(pkt[TCP].dport)
+    if pkt.haslayer(UDP):
+        return int(pkt[UDP].sport), int(pkt[UDP].dport)
+    return None, None
+
+
 def packet_to_record(pkt, seq: int) -> PacketRecord:
     """把一个 scapy 包转换成 PacketRecord（纯函数，便于单测）。
 
     连同原始字节 raw=bytes(pkt) 一起保存，供详情树/hex 视图使用。raw 的内存随
     PacketRecord 一起被有界结构（缓冲 maxlen / 表格行上限）约束，淘汰即释放。
+
+    同时在子线程里一次性算好 sport/dport/l3（供显示过滤）与 app 应用层推测
+    （审慎、带依据），列表列与详情节点复用，避免主线程重复解析。
     """
+    from sniffer.gui.appid import identify_app
+
     ts = float(getattr(pkt, "time", None) or time.time())
     src, dst = _src_dst(pkt)
     try:
@@ -99,6 +126,11 @@ def packet_to_record(pkt, seq: int) -> PacketRecord:
         raw = bytes(pkt)
     except Exception:
         raw = b""
+    sport, dport = _ports(pkt)
+    try:
+        app = identify_app(pkt)
+    except Exception:
+        app = None
     return PacketRecord(
         seq=seq,
         ts=ts,
@@ -109,6 +141,10 @@ def packet_to_record(pkt, seq: int) -> PacketRecord:
         length=len(pkt),
         summary=summary,
         raw=raw,
+        sport=sport,
+        dport=dport,
+        l3=_l3_family(pkt),
+        app=app,
     )
 
 

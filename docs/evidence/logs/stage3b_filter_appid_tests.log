@@ -1,0 +1,75 @@
+===== stage3(b)(c) headless tests log =====
+date: 2026-11-19 12:20:05 CST
+env: Python 3.12.15 | scapy 2.8.0 | PySide6 6.12.0
+
+########## 1) py_compile + import ##########
+py_compile OK
+import OK
+
+########## 2) test_appid.py（应用层推测 + 反例）##########
+[ok  ] HTTP 请求判为 HTTP: label=HTTP
+[ok  ] HTTP 判定有请求行依据: ["HTTP 请求行: b'GET /index.html HTTP/1.1'"]
+[ok  ] HTTP 置信度 high
+[ok  ] TLS ClientHello 判为 TLS: label=TLS
+[ok  ] TLS 判定有 record 头依据: ['TLS record 头: type=0x16, version=0x03 0x01（0x16=Handshake，疑似 ClientHello)']
+[ok  ] 443 上普通字节不被判成 TLS（label=''）
+[ok  ] 443 普通字节：仅端口提示、未识别
+[ok  ] 标注了端口提示但未证实: ['端口提示：443 常见于 TLS，但载荷未见其特征 → 不予断定']
+[ok  ] 80 端口 TLS 字节按载荷判为 TLS（非 HTTP）: label=TLS
+[ok  ] 标注端口(80)与载荷(TLS)冲突、以载荷为准: ['注意：端口 80 常见为 HTTP，但载荷特征判定为 TLS —— 以载荷为准（端口不是证据）']
+[ok  ] DNS 结构判为 DNS: label=DNS
+[ok  ] DNS 判定有结构依据: ['scapy 解析出 DNS 结构: id=4660, qd=None, an=None']
+[ok  ] ICMP(非 TCP/UDP) → 未识别
+[ok  ] display 含「推测」: 疑似 HTTP（推测，依据载荷）
+[ok  ] short 带问号: 疑似HTTP?
+
+结果：全部通过
+exit=0
+
+########## 3) test_display_filter.py（显示过滤）##########
+[ok  ] l3 族填充正确(IPv4/IPv6)
+[ok  ] sport/dport 填充正确
+[ok  ] ARP 的 l3 正确
+[ok  ] 空表达式 → 全部显示
+[ok  ] tcp → 所有 TCP
+[ok  ] udp → UDP
+[ok  ] icmp → ICMP
+[ok  ] arp → ARP
+[ok  ] ip → 所有 IPv4（不含 IPv6/ARP）
+[ok  ] ipv6 → IPv6
+[ok  ] tcp and port 443 → 仅 tcp443
+[ok  ] port 53 → 源或目的端口 53
+[ok  ] dport==80 → tcp80
+[ok  ] ip==10.0.0.1 → 源或目的匹配
+[ok  ] src==10.0.0.3 → tcp80
+[ok  ] 优先级 and>or：(tcp&443) or udp
+[ok  ] port!=443 取反正确
+[ok  ] 大小写不敏感 + or
+[ok  ] 非法表达式正确抛 FilterError: 'tcp and'
+[ok  ] 非法表达式正确抛 FilterError: 'foobar'
+[ok  ] 非法表达式正确抛 FilterError: 'port abc'
+[ok  ] 非法表达式正确抛 FilterError: '== 1.2.3.4'
+
+结果：全部通过
+exit=0
+
+########## 4) 回归：test_dissect / test_packet_model / test_gui_headless ##########
+test_dissect: OK
+test_packet_model: OK
+test_gui_headless: OK
+
+########## 5) MainWindow：显示过滤 + 应用层(推测) 节点 冒烟测试 (offscreen) ##########
+qt.qpa.fonts: Populating font family aliases took 98 ms. Replace uses of missing font family "Sans Serif" with one that exists to avoid this cost. 
+This plugin does not support propagateSizeHints()
+全量 total: 4 | 可见 visible: 4
+第1行协议列: TCP (疑似HTTP?) (应含 疑似HTTP?)
+第2行协议列: TCP (疑似TLS?) (应含 疑似TLS?)
+过滤 'tcp and port 443' -> 可见: 1 | 全量仍: 4 | hint: ✓ 过滤生效
+  过滤后第1行协议列: TCP (疑似TLS?)
+非法 'tcp and' -> 可见: 1 | hint: 语法错误：空的过滤项
+清空过滤 -> 可见: 4
+详情顶层: ['Ethernet', 'IP', 'TCP', 'Raw', '应用层(推测)']
+应用层节点结论: 疑似 HTTP（推测，依据载荷）
+TLS 包应用层节点结论: 疑似 TLS（推测，依据载荷）
+关闭无异常 OK
+exit=0

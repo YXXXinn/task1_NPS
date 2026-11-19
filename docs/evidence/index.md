@@ -85,3 +85,45 @@
   - 场景：同一选中包的十六进制 + ASCII 视图（偏移/hex/ASCII 三段，等宽对齐，不可见字节为 '.'）
   - 操作/命令：选中包后看右下 hex 栏
   - 预期：字节与 Wireshark 对照一致
+
+## 第三阶段（子阶段 b：GUI 显示过滤；子阶段 c：应用层识别-审慎推测）
+
+### 已采集（自动化、真实输出）
+
+- 文件：`logs/stage3b_filter_appid_tests.log`
+  - 采集日期：2026-11-19
+  - 场景：无头单元验证（合成包）——
+    显示过滤纯函数（tcp/udp/icmp/arp/ip/ipv6、ip/src/dst、port/sport/dport、and/or 优先级、取反、空、非法抛错）；
+    应用层识别（HTTP/TLS/DNS）+ **反例**（443 普通字节不判 TLS、80 上 TLS 字节按载荷判 TLS、端口冲突标注）；
+    MainWindow 显示过滤实时筛选（全量保留/可逆）、协议列应用层标注（带问号）、详情「应用层(推测)」节点
+  - 操作/命令：
+    - `python tests/test_appid.py`
+    - `python tests/test_display_filter.py`
+    - `QT_QPA_PLATFORM=offscreen python tests/test_gui_headless.py`（回归）
+  - 预期：全部断言通过，退出码 0
+  - 实际结果：见日志（全部通过）
+  - 代码版本：第三阶段子阶段 b+c（未提交，待用户确认）
+  - 报告用途：证明显示过滤与应用层审慎推测（端口≠证据）逻辑正确
+  - 脱敏：合成数据，无敏感信息
+
+### 待手动采集/验证（需 GUI 窗口 / root / 人工操作）
+
+- 文件：`screenshots/stage3b_display_filter.png` —— **待手动采集**
+  - 场景：输入显示过滤（如 `tcp and port 443`）→ 列表即时只显示匹配包；清空→恢复；与上方 BPF 抓包过滤框并存、文案区分（内核层 vs 界面层）
+  - 操作/命令：`sudo .venv/bin/python -m sniffer gui` 抓包后，在「显示过滤(界面层)」框输入表达式
+  - 预期：列表即时筛选、底部状态栏显示「全量保留 N / 可见 M」、数据不丢（清空恢复）
+
+- 文件：`screenshots/stage3b_filter_vs_bpf.png` —— **待手动采集**
+  - 场景：对比 BPF（内核层、重启抓包才生效、丢包不可逆）与显示过滤（界面层、随时改、不丢包）
+  - 操作/命令：先以 BPF `tcp` 抓；再用显示过滤 `port 443` 即时筛
+  - 预期：能讲清两者层级/时机差异
+
+- 文件：`screenshots/stage3c_appid_http_tls.png` —— **待手动采集**
+  - 场景：点 HTTP/TLS 包 → 详情栏「应用层(推测)」节点显示「疑似 HTTP/TLS（推测，依据载荷）」及判定依据
+  - 操作/命令：访问 http 站点/https 站点产生流量，点对应包展开应用层节点
+  - 预期：结论带「推测」、列出载荷依据与端口一致/冲突说明
+
+- 文件：`screenshots/stage3c_appid_counterexample.png` —— **待手动采集**
+  - 场景：**反例**——非常规端口或端口与载荷不一致时不被误判（如 443 上非 TLS 显示「仅端口提示、未证实」）
+  - 操作/命令：构造/捕获此类流量，点包看应用层节点的「推测/未证实」标注
+  - 预期：不出现把端口当证据的确证式结论

@@ -46,3 +46,26 @@
 ### 对应证据（第三阶段）
 - 自动化：`evidence/logs/stage3_headless_tests.log`
 - 截图：`evidence/screenshots/stage3_{three_pane,detail_tree,hexdump}.png`（**待手动采集**）
+
+## 第三阶段子阶段 b+c 录屏步骤（显示过滤 + 应用层推测，待录制）
+
+1. 启动抓包，产生可控流量：`curl http://example.com`（HTTP）、访问一个 https 站点（TLS）、`dig example.com`（DNS）。
+2. **显示过滤 vs BPF**（讲义第 9 页思考题的"层次"考点）：
+   - 顶部「BPF 抓包过滤(内核层)」：演示重启抓包用 `tcp` 过滤——内核层丢包、不可逆。
+   - 第二行「显示过滤(界面层)」：输入 `tcp and port 443` → 列表**即时**只显示匹配；清空 → 立刻恢复（底层全量没丢）。强调可逆、作用于已抓到的包。
+   - 展示状态栏「全量保留 N / 显示过滤后可见 M」。
+3. **应用层推测（严守端口≠证据）**：
+   - 点一个 HTTP 包 → 详情栏末尾「应用层(推测)」节点：`疑似 HTTP（推测，依据载荷）`，展开看"判定依据(载荷)=HTTP 请求行"。
+   - 点一个 TLS 包 → `疑似 TLS（推测）`，依据 TLS record 头 0x16 0x03。
+   - **反例**：找一个 443 上并非 TLS 的包（或自造）→ 节点显示「未识别（仅端口提示，载荷未证实）」，强调没把端口当证据。
+   - 若遇到端口与载荷冲突（如 80 上是 TLS）→ 节点 notes 标注"以载荷为准"。
+4. 列表「协议」列对已识别的包追加 `(疑似HTTP?)` 带问号标注——强调是推测不是确证。
+
+### 讲解要点（答辩）
+- 显示过滤=界面层、可逆、作用于已抓到的包；BPF=内核层、丢包不可逆。两者实现与数据路径不同。
+- 应用层判定**只认载荷特征**，端口仅作提示并显式标注；端口/载荷冲突时以载荷为准——正是讲义第 9 页思考题的答案。
+- 过滤/识别逻辑都是无 Qt 纯函数（`display_filter.py` / `appid.py`），有无头测试与反例覆盖。
+
+### 对应证据（第三阶段 b+c）
+- 自动化：`evidence/logs/stage3b_filter_appid_tests.log`
+- 截图：`evidence/screenshots/stage3b_display_filter.png`、`stage3b_filter_vs_bpf.png`、`stage3c_appid_http_tls.png`、`stage3c_appid_counterexample.png`（**待手动采集**）

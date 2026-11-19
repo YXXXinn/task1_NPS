@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from sniffer.gui.capture_worker import CaptureWorker
+from sniffer.gui.display_filter import FilterError, compile_filter
 from sniffer.gui.dissect import dissect_layers, format_hex_dump
 from sniffer.gui.packet_model import BoundedPacketBuffer
 from sniffer.gui.packet_table import PacketTableModel
@@ -40,8 +41,8 @@ _TABLE_MAX_ROWS = 5000
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("网络嗅探器 — 实验 1A 第三阶段（列表 + 详情 + 十六进制三栏）")
-        self.resize(1000, 700)
+        self.setWindowTitle("网络嗅探器 — 实验 1A 第三阶段（三栏 + 显示过滤 + 应用层推测）")
+        self.resize(1040, 720)
 
         self._thread = None
         self._worker = None
@@ -68,9 +69,9 @@ class MainWindow(QMainWindow):
         self._populate_ifaces()
         top.addWidget(self.iface_combo, 2)
 
-        top.addWidget(QLabel("BPF 抓包过滤："))
+        top.addWidget(QLabel("BPF 抓包过滤(内核层)："))
         self.bpf_edit = QLineEdit()
-        self.bpf_edit.setPlaceholderText('内核层过滤，语法同 tcpdump，如 "tcp port 80"；留空抓全部')
+        self.bpf_edit.setPlaceholderText('内核层丢包、不可逆；语法同 tcpdump，如 "tcp port 80"；留空抓全部')
         top.addWidget(self.bpf_edit, 3)
 
         self.start_btn = QPushButton("开始")
@@ -84,6 +85,22 @@ class MainWindow(QMainWindow):
         self.status_dot = QLabel("■ 已停止")
         top.addWidget(self.status_dot)
         root.addLayout(top)
+
+        # 第二行：显示过滤（界面层）——与上面的 BPF 抓包过滤(内核层)明确区分。
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("显示过滤(界面层)："))
+        self.display_edit = QLineEdit()
+        self.display_edit.setPlaceholderText(
+            '作用于已抓到的包、可随时改/清空、不丢数据；'
+            '如 tcp and port 443 / ip==172.22.124.230 / icmp or arp')
+        self.display_edit.textChanged.connect(self._apply_display_filter)
+        row2.addWidget(self.display_edit, 5)
+        self.clear_filter_btn = QPushButton("清空过滤")
+        self.clear_filter_btn.clicked.connect(lambda: self.display_edit.clear())
+        row2.addWidget(self.clear_filter_btn)
+        self.filter_hint = QLabel("")  # 显示过滤语法错误提示
+        row2.addWidget(self.filter_hint, 2)
+        root.addLayout(row2)
 
         # 三栏（类 Wireshark）：上=Packet List；下=（左 详情树 / 右 十六进制）。
         # 用 QSplitter 组合，渲染详情/hex 只在选中时触发，不影响列表实时刷新、不阻塞主线程。
@@ -131,8 +148,8 @@ class MainWindow(QMainWindow):
         root.addWidget(main_split, 1)
 
         self.statusBar().showMessage(
-            "提示：点击列表某行 → 下方查看该包的协议分层与十六进制。"
-            "BPF 抓包过滤在内核层（本框）；显示过滤属后续子阶段，层级不同。"
+            "点击某行看详情/十六进制/应用层(推测)。"
+            "BPF 抓包过滤=内核层丢包不可逆；显示过滤=界面层筛已抓到的包、可逆。"
         )
 
     def _populate_ifaces(self) -> None:
@@ -212,7 +229,7 @@ class MainWindow(QMainWindow):
         self._buffer.append(record)
 
     def _flush(self) -> None:
-        """QTimer 定时：批量把缓冲里的包塞进表格模型。"""
+        """QTimer 定时：批量把缓冲里的包塞进表格模型（新包按当前显示过滤决定是否可见）。"""
         batch = self._buffer.drain()
         if batch:
             self._model.append_batch(batch)
@@ -220,10 +237,24 @@ class MainWindow(QMainWindow):
             if not self.table.selectionModel().hasSelection():
                 self.table.scrollToBottom()
         self.statusBar().showMessage(
-            f"累计抓包 {self._total}  |  表格显示 {self._model.rowCount()} 行"
-            f"（上限 {_TABLE_MAX_ROWS}）  |  缓冲丢弃 {self._buffer.dropped}"
-            f"  |  BPF 抓包过滤(内核层) ≠ 显示过滤(后续子阶段)"
+            f"累计抓包 {self._total}  |  全量保留 {self._model.total_count()}"
+            f"（上限 {_TABLE_MAX_ROWS}）  |  显示过滤后可见 {self._model.visible_count()} 行"
+            f"  |  缓冲丢弃 {self._buffer.dropped}"
+            f"  |  BPF(内核层,丢包不可逆) ≠ 显示过滤(界面层,可逆)"
         )
+
+    def _apply_display_filter(self) -> None:
+        """显示过滤输入变化：编译表达式并重建视图。不丢底层全量数据。"""
+        text = self.display_edit.text()
+        try:
+            pred = compile_filter(text)
+        except FilterError as exc:
+            self.filter_hint.setText(f"语法错误：{exc}")
+            self.filter_hint.setStyleSheet("color: #c0392b;")
+            return  # 语法错误时保持当前视图不变
+        self.filter_hint.setText("" if not text.strip() else "✓ 过滤生效")
+        self.filter_hint.setStyleSheet("color: #27ae60;")
+        self._model.set_filter(pred)
 
     # ---------------- 详情 / 十六进制 ----------------
     def _on_row_changed(self, current, _previous) -> None:
@@ -260,6 +291,25 @@ class MainWindow(QMainWindow):
             for fname, fval in layer.fields:
                 node.addChild(QTreeWidgetItem([str(fname), str(fval)]))
             self.detail_tree.addTopLevelItem(node)
+
+        # 末尾追加「应用层(推测)」节点：审慎推测，始终带「推测」字样 + 判定依据。
+        app = getattr(rec, "app", None)
+        app_node = QTreeWidgetItem(["应用层(推测)", app.display() if app is not None else "未识别"])
+        if app is not None:
+            if app.evidence:
+                ev = QTreeWidgetItem(["判定依据(载荷)", ""])
+                for e in app.evidence:
+                    ev.addChild(QTreeWidgetItem(["·", e]))
+                app_node.addChild(ev)
+            if app.notes:
+                nt = QTreeWidgetItem(["端口提示/一致性", ""])
+                for n in app.notes:
+                    nt.addChild(QTreeWidgetItem(["·", n]))
+                app_node.addChild(nt)
+            app_node.addChild(QTreeWidgetItem(["置信度", app.confidence]))
+            app_node.addChild(QTreeWidgetItem(["仅端口提示", str(app.port_hint_only)]))
+        self.detail_tree.addTopLevelItem(app_node)
+
         self.detail_tree.expandAll()
 
     # ---------------- 关闭 ----------------
