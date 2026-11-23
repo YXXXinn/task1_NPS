@@ -38,3 +38,8 @@ secrets.*
 .mypy_cache/
 .coverage
 htmlcov/
+.comate/
+docs/demo_script.md
+docs/commands_cheatsheet.md
+docs/evidence/
+docs/实验报告.md
